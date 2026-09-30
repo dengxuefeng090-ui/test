@@ -1,0 +1,473 @@
+Option Explicit
+'====================================================================
+' 現行 / 刷新後 数据高速比较
+'
+' 数据开始行：第3行
+' Key：A列
+'
+' 第一组：
+'   刷新後 H:V
+'   ↓
+'   現行 K:Y
+'
+' 第二组：
+'   刷新後 W:AH
+'   ↓
+'   現行 Z:AK + AL:AW
+'
+' 比较结果：
+'   刷新後 AX:BX
+'
+' Key状态：
+'   刷新後 AV
+'   現行 BP
+'
+' 特殊比率比较：
+'   H ↔ K
+'   I ↔ L
+'   M ↔ P
+'   N ↔ Q
+'   R ↔ U
+'   S ↔ V
+'
+' 上述6组：
+'   小数点后11位比较
+'
+' 其他项目：
+'   普通数值比较
+'
+' 空白 / 非数值 / Error：
+'   按0处理
+'====================================================================
+Public Sub データ比較_高速版()
+    Const DATA_START_ROW As Long = 3
+    Const RESULT_START_COL As Long = 50   ' AX
+    Const RESULT_COUNT As Long = 27
+    Dim wsOld As Worksheet
+    Dim wsNew As Worksheet
+    Dim lastRowOld As Long
+    Dim lastRowNew As Long
+    Dim oldData As Variant
+    Dim newData As Variant
+    Dim resultData As Variant
+    Dim statusNew As Variant
+    Dim statusOld As Variant
+    Dim dictOld As Object
+    Dim dictNew As Object
+    Dim r As Long
+    Dim c As Long
+    Dim oldRow As Long
+    Dim key As String
+    Dim newValue As Double
+    Dim oldValue As Double
+    '------------------------------------------------------------
+    ' 保存 Excel 原来的状态
+    '------------------------------------------------------------
+    Dim prevCalculation As XlCalculation
+    Dim prevScreenUpdating As Boolean
+    Dim prevEnableEvents As Boolean
+    '------------------------------------------------------------
+    ' 工作表
+    '------------------------------------------------------------
+    Set wsOld = ThisWorkbook.Worksheets("現行")
+    Set wsNew = ThisWorkbook.Worksheets("刷新後")
+    '------------------------------------------------------------
+    ' 找最后一行
+    ' Key 在 A列
+    '------------------------------------------------------------
+    lastRowOld = wsOld.Cells(wsOld.Rows.Count, "A").End(xlUp).Row
+    lastRowNew = wsNew.Cells(wsNew.Rows.Count, "A").End(xlUp).Row
+    '------------------------------------------------------------
+    ' 保存 Excel 当前设置
+    '------------------------------------------------------------
+    prevCalculation = Application.Calculation
+    prevScreenUpdating = Application.ScreenUpdating
+    prevEnableEvents = Application.EnableEvents
+    On Error GoTo ErrorHandler
+    '============================================================
+    ' 关闭 Excel 界面刷新，提高速度
+    '============================================================
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.Calculation = xlCalculationManual
+    '============================================================
+    ' 清除旧结果
+    '
+    ' 刷新後：
+    '   AV:BX
+    '
+    ' 現行：
+    '   BP
+    '============================================================
+    If lastRowNew >= DATA_START_ROW Then
+        wsNew.Range( _
+            "AV" & DATA_START_ROW & ":BX" & lastRowNew _
+        ).ClearContents
+    End If
+    If lastRowOld >= DATA_START_ROW Then
+        wsOld.Range( _
+            "BP" & DATA_START_ROW & ":BP" & lastRowOld _
+        ).ClearContents
+    End If
+    '============================================================
+    ' 一次性读取数据
+    '
+    ' 現行：
+    '   A:AW
+    '
+    ' 刷新後：
+    '   A:AH
+    '============================================================
+    If lastRowOld >= DATA_START_ROW Then
+        oldData = wsOld.Range( _
+            "A" & DATA_START_ROW & ":AW" & lastRowOld _
+        ).Value2
+    End If
+    If lastRowNew >= DATA_START_ROW Then
+        newData = wsNew.Range( _
+            "A" & DATA_START_ROW & ":AH" & lastRowNew _
+        ).Value2
+    End If
+    '============================================================
+    ' 建立 現行 Key Dictionary
+    '============================================================
+    Set dictOld = CreateObject("Scripting.Dictionary")
+    ' 不区分大小写
+    dictOld.CompareMode = vbTextCompare
+    If lastRowOld >= DATA_START_ROW Then
+        For r = 1 To UBound(oldData, 1)
+            key = GetKey(oldData(r, 1))
+            If Len(key) > 0 Then
+                dictOld(key) = r
+            End If
+        Next r
+    End If
+    '============================================================
+    ' 建立 刷新後 Key Dictionary
+    '============================================================
+    Set dictNew = CreateObject("Scripting.Dictionary")
+    dictNew.CompareMode = vbTextCompare
+    If lastRowNew >= DATA_START_ROW Then
+        For r = 1 To UBound(newData, 1)
+            key = GetKey(newData(r, 1))
+            If Len(key) > 0 Then
+                dictNew(key) = r
+            End If
+        Next r
+    End If
+    '============================================================
+    ' 创建比较结果数组
+    '
+    ' AX:BX = 27列
+    '============================================================
+    If lastRowNew >= DATA_START_ROW Then
+        ReDim resultData( _
+            1 To UBound(newData, 1), _
+            1 To RESULT_COUNT _
+        )
+        '========================================================
+        ' 开始比较
+        '========================================================
+        For r = 1 To UBound(newData, 1)
+            key = GetKey(newData(r, 1))
+            If Len(key) > 0 Then
+                '------------------------------------------------
+                ' Key在 現行 中存在
+                '------------------------------------------------
+                If dictOld.Exists(key) Then
+                    oldRow = dictOld(key)
+                    '================================================
+                    ' 第一组
+                    '
+                    ' 刷新後 H:V
+                    ' ↓
+                    ' 現行 K:Y
+                    '
+                    ' 共15项
+                    '================================================
+                    For c = 0 To 14
+                        newValue = ToNumberFast( _
+                            newData(r, 8 + c) _
+                        )
+                        oldValue = ToNumberFast( _
+                            oldData(oldRow, 11 + c) _
+                        )
+                        '------------------------------------------------
+                        ' 比率型：
+                        '
+                        ' c = 0  → H / K
+                        ' c = 1  → I / L
+                        ' c = 5  → M / P
+                        ' c = 6  → N / Q
+                        ' c = 10 → R / U
+                        ' c = 11 → S / V
+                        '
+                        ' 小数点后11位比较
+                        '------------------------------------------------
+                        Select Case c
+                            Case 0, 1, 5, 6, 10, 11
+                                resultData(r, c + 1) = _
+                                    (Round(newValue, 11) = _
+                                     Round(oldValue, 11))
+                            '------------------------------------------------
+                            ' 普通数值型
+                            '------------------------------------------------
+                            Case Else
+                                resultData(r, c + 1) = _
+                                    (newValue = oldValue)
+                        End Select
+                    Next c
+                    '================================================
+                    ' 第二组
+                    '
+                    ' 刷新後 W:AH
+                    '
+                    ' 現行：
+                    ' Z  + AL
+                    ' AA + AM
+                    ' AB + AN
+                    ' ...
+                    ' AK + AW
+                    '
+                    ' 共12项
+                    '================================================
+                    For c = 0 To 11
+                        newValue = ToNumberFast( _
+                            newData(r, 23 + c) _
+                        )
+                        oldValue = _
+                            ToNumberFast( _
+                                oldData(oldRow, 26 + c) _
+                            ) _
+                            + _
+                            ToNumberFast( _
+                                oldData(oldRow, 38 + c) _
+                            )
+                        ' 普通数值比较
+                        resultData(r, 16 + c) = _
+                            (newValue = oldValue)
+                    Next c
+                Else
+                    '================================================
+                    ' Key只存在于 刷新後
+                    '
+                    ' AX:BX 全部 False
+                    '
+                    ' AV 会另外写：
+                    ' 刷新後のみ
+                    '================================================
+                    For c = 1 To RESULT_COUNT
+                        resultData(r, c) = False
+                    Next c
+                End If
+            End If
+        Next r
+        '========================================================
+        ' 一次性写入比较结果
+        '========================================================
+        wsNew.Range( _
+            "AX" & DATA_START_ROW & ":BX" & lastRowNew _
+        ).Value = resultData
+        '========================================================
+        ' 写入 刷新後 Key状态
+        '
+        ' 刷新後有
+        ' 現行没有
+        '
+        ' → AV
+        '========================================================
+        ReDim statusNew( _
+            1 To UBound(newData, 1), _
+            1 To 1 _
+        )
+        For r = 1 To UBound(newData, 1)
+            key = GetKey(newData(r, 1))
+            If Len(key) > 0 Then
+                If Not dictOld.Exists(key) Then
+                    statusNew(r, 1) = "刷新後のみ"
+                End If
+            End If
+        Next r
+        wsNew.Range( _
+            "AV" & DATA_START_ROW & ":AV" & lastRowNew _
+        ).Value = statusNew
+    End If
+    '============================================================
+    ' 写入 現行 Key状态
+    '
+    ' 現行有
+    ' 刷新後没有
+    '
+    ' → BP
+    '============================================================
+    If lastRowOld >= DATA_START_ROW Then
+        ReDim statusOld( _
+            1 To UBound(oldData, 1), _
+            1 To 1 _
+        )
+        For r = 1 To UBound(oldData, 1)
+            key = GetKey(oldData(r, 1))
+            If Len(key) > 0 Then
+                If Not dictNew.Exists(key) Then
+                    statusOld(r, 1) = "現行のみ"
+                End If
+            End If
+        Next r
+        wsOld.Range( _
+            "BP" & DATA_START_ROW & ":BP" & lastRowOld _
+        ).Value = statusOld
+    End If
+    '============================================================
+    ' 设置结果标题
+    '============================================================
+    '------------------------------------------------------------
+    ' 第一组
+    '
+    ' AX:BL
+    '
+    ' 刷新後 H:V
+    ' 現行 K:Y
+    '------------------------------------------------------------
+    For c = 0 To 14
+        ' 第1行：
+        ' 刷新後对应项目的物理名称
+        wsNew.Cells( _
+            1, _
+            RESULT_START_COL + c _
+        ).Value = _
+            wsNew.Cells(1, 8 + c).Value
+        ' 第2行：
+        ' 現行对应列
+        wsNew.Cells( _
+            2, _
+            RESULT_START_COL + c _
+        ).Value = _
+            "現行 " & ColumnLetter(11 + c)
+    Next c
+    '------------------------------------------------------------
+    ' 第二组
+    '
+    ' BM:BX
+    '
+    ' 刷新後 W:AH
+    ' 現行 Z:AK + AL:AW
+    '------------------------------------------------------------
+    For c = 0 To 11
+        ' 第1行：
+        ' 刷新後对应项目的物理名称
+        wsNew.Cells( _
+            1, _
+            RESULT_START_COL + 15 + c _
+        ).Value = _
+            wsNew.Cells(1, 23 + c).Value
+        ' 第2行：
+        ' 現行对应的两列
+        wsNew.Cells( _
+            2, _
+            RESULT_START_COL + 15 + c _
+        ).Value = _
+            "現行 " & _
+            ColumnLetter(26 + c) & _
+            " + " & _
+            ColumnLetter(38 + c)
+    Next c
+    '============================================================
+    ' Key状态标题
+    '============================================================
+    wsNew.Range("AV1").Value = "Key状態"
+    wsNew.Range("AV2").Value = "刷新後のみ"
+    wsOld.Range("BP1").Value = "Key状態"
+    wsOld.Range("BP2").Value = "現行のみ"
+    '============================================================
+    ' 标题加粗
+    '============================================================
+    wsNew.Range("AV1:BX2").Font.Bold = True
+    wsOld.Range("BP1:BP2").Font.Bold = True
+    '============================================================
+    ' 恢复 Excel 原来的设置
+    '============================================================
+    Application.ScreenUpdating = prevScreenUpdating
+    Application.EnableEvents = prevEnableEvents
+    Application.Calculation = prevCalculation
+    '============================================================
+    ' 完成提示
+    '============================================================
+    MsgBox _
+        "数据比较完成！" & vbCrLf & vbCrLf & _
+        "比较结果：" & vbCrLf & _
+        "刷新後 AX:BX" & vbCrLf & vbCrLf & _
+        "Key状态：" & vbCrLf & _
+        "刷新後のみ → 刷新後 AV" & vbCrLf & _
+        "現行のみ → 現行 BP", _
+        vbInformation, _
+        "数据比较完成"
+    Exit Sub
+'====================================================================
+' 错误处理
+'====================================================================
+ErrorHandler:
+    Application.ScreenUpdating = prevScreenUpdating
+    Application.EnableEvents = prevEnableEvents
+    Application.Calculation = prevCalculation
+    MsgBox _
+        "数据比较过程中发生错误。" & vbCrLf & vbCrLf & _
+        "错误编号：" & Err.Number & vbCrLf & _
+        "错误内容：" & Err.Description, _
+        vbCritical, _
+        "数据比较错误"
+End Sub
+'====================================================================
+' Key处理
+'
+' 空白Key：
+'   返回空字符串
+'
+' 其他：
+'   转换成字符串并去掉前后空格
+'====================================================================
+Private Function GetKey(ByVal v As Variant) As String
+    If IsError(v) Then
+        GetKey = ""
+    ElseIf IsEmpty(v) Then
+        GetKey = ""
+    Else
+        GetKey = Trim$(CStr(v))
+    End If
+End Function
+'====================================================================
+' 数值转换
+'
+' 空白      → 0
+' 非数值    → 0
+' Error     → 0
+' 数值      → Double
+'====================================================================
+Private Function ToNumberFast(ByVal v As Variant) As Double
+    If IsError(v) Then
+        ToNumberFast = 0
+    ElseIf IsEmpty(v) Then
+        ToNumberFast = 0
+    ElseIf IsNumeric(v) Then
+        ToNumberFast = CDbl(v)
+    Else
+        ToNumberFast = 0
+    End If
+End Function
+'====================================================================
+' 根据列号取得 Excel 列字母
+'
+' 11 → K
+' 26 → Z
+' 38 → AL
+' 50 → AX
+'====================================================================
+Private Function ColumnLetter(ByVal colNum As Long) As String
+    ColumnLetter = _
+        Split( _
+            Application.Cells(1, colNum).Address( _
+                True, _
+                False _
+            ), _
+            "$" _
+        )(0)
+End Function
